@@ -11,13 +11,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
-import { auth, db } from './lib/firebase';
-import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
-import {
-  collection, doc, setDoc, getDoc, query, where, onSnapshot, orderBy, serverTimestamp
-} from 'firebase/firestore';
-import AuthPage from './pages/AuthPage';
-
+// Cleaned up for local-only operation
 const API_BASE_URL = 'http://localhost:8000';
 
 interface ChatMessage { role: 'user' | 'tutor'; content: string; }
@@ -35,12 +29,8 @@ const BackgroundElements = () => (
 
 const App: React.FC = () => {
   // --- CORE STATE ---
-  const [user, setUser] = useState<User | null>(null);
-  const [authMode, setAuthMode] = useState<'login' | 'signup' | null>(null);
-  const [sessions, setSessions] = useState<SessionDoc[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [dashboardActive, setDashboardActive] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false); // Default to closed and hidden
 
   // --- FILE STAGING ---
   const [selectedPdf, setSelectedPdf] = useState<File | null>(null);
@@ -116,40 +106,49 @@ const App: React.FC = () => {
     if (inFlightPages.current.has(pageNum) || llmMapRef.current[pageNum]) return;
     inFlightPages.current.add(pageNum);
     setPageLoading(prev => ({ ...prev, [pageNum]: true }));
-    setPipelineStage(prev => ({ ...prev, [pageNum]: 'Vision model is cooking…' }));
-    try {
-      const vlmResp = await axios.post(`${API_BASE_URL}/transcribe/${filename}?page_index=${pageNum}`, undefined, { timeout: 120_000 });
-      const tr = vlmResp.data.markdown;
-      setPipelineStage(prev => ({ ...prev, [pageNum]: 'Formatting it for you…' }));
-      const llmResp = await axios.post(`${API_BASE_URL}/explain`, { transcription: tr }, { timeout: 120_000 });
-      const syn = llmResp.data.result;
+    setPipelineStage(prev => ({ ...prev, [pageNum]: 'SCANNING...' }));
 
-      setVlmMap(p => ({ ...p, [pageNum]: tr }));
-      setLlmMap(p => ({ ...p, [pageNum]: syn }));
-      if (currentSessionId) {
-        const pageRef = doc(db, "sessions", currentSessionId, "pages", pageNum.toString());
-        await setDoc(pageRef, { transcription: tr, synthesis: syn, timestamp: serverTimestamp() }, { merge: true });
+    let attempts = 0;
+    const maxAttempts = 3;
+    let success = false;
+
+    while (attempts < maxAttempts && !success) {
+      try {
+        attempts++;
+        if (attempts > 1) {
+          setPipelineStage(prev => ({ ...prev, [pageNum]: `RETRYING (${attempts}/${maxAttempts})...` }));
+        }
+        
+        const prevContext = pageNum > 0 ? vlmMap[pageNum - 1] || "" : "";
+        const resp = await axios.post(
+          `${API_BASE_URL}/process/${filename}?page_index=${pageNum}&previous_context=${encodeURIComponent(prevContext)}`, 
+          undefined, 
+          { timeout: 180_000 }
+        );
+        const { transcription, synthesis } = resp.data;
+
+        setVlmMap(p => ({ ...p, [pageNum]: transcription }));
+        setLlmMap(p => ({ ...p, [pageNum]: { explanation: synthesis } }));
+        success = true;
+      } catch (e) {
+        console.error(`Pipeline attempt ${attempts} failed for page ${pageNum}`, e);
+        if (attempts === maxAttempts) {
+          setError(`Cloud failed to process page ${pageNum + 1} after 3 tries.`);
+        } else {
+          // Small delay before retry
+          await new Promise(r => setTimeout(r, 1000 * attempts));
+        }
       }
-
-      inFlightPages.current.delete(pageNum);
-      setPageLoading(prev => ({ ...prev, [pageNum]: false }));
-      setPipelineStage(prev => {
-        const n = { ...prev };
-        delete n[pageNum];
-        return n;
-      });
-    } catch (e) {
-      console.error("Pipeline fail page", pageNum, e);
-      setError("Could not analyze this page. Try again or check the backend.");
-      inFlightPages.current.delete(pageNum);
-      setPageLoading(prev => ({ ...prev, [pageNum]: false }));
-      setPipelineStage(prev => {
-        const n = { ...prev };
-        delete n[pageNum];
-        return n;
-      });
     }
-  }, [currentSessionId]);
+
+    inFlightPages.current.delete(pageNum);
+    setPageLoading(prev => ({ ...prev, [pageNum]: false }));
+    setPipelineStage(prev => {
+      const n = { ...prev };
+      delete n[pageNum];
+      return n;
+    });
+  }, [vlmMap]);
 
   const handleGenerateFlashcards = useCallback(async () => {
     if (!data || !vlmMap[previewPage] || !llmMap[previewPage]?.explanation || isGeneratingFlashcards) return;
@@ -170,10 +169,6 @@ const App: React.FC = () => {
       );
       const cards = fcResp.data.flashcards || [];
       setFlashcardsByPage(p => ({ ...p, [previewPage]: cards }));
-      if (currentSessionId) {
-        const pageRef = doc(db, "sessions", currentSessionId, "pages", previewPage.toString());
-        await setDoc(pageRef, { flashcards: cards, timestamp: serverTimestamp() }, { merge: true });
-      }
       setActiveCardIndex(0);
       setCardFlipped(false);
       setFlashcardsOpen(true);
@@ -183,78 +178,36 @@ const App: React.FC = () => {
     } finally {
       setIsGeneratingFlashcards(false);
     }
-  }, [currentSessionId, data, flashcardsByPage, isGeneratingFlashcards, llmMap, previewPage, vlmMap]);
+  }, [data, flashcardsByPage, isGeneratingFlashcards, llmMap, previewPage, vlmMap]);
 
-  const loadChatHistory = useCallback(async (pageNum: number) => {
-    if (!user || !currentSessionId) return;
-    const chatRef = collection(db, "sessions", currentSessionId, "pages", pageNum.toString(), "chats");
-    const q = query(chatRef, orderBy("timestamp", "asc"));
-    onSnapshot(q, (snap) => {
-      const messages = snap.docs.map(d => d.data() as ChatMessage);
-      setChatHistory(prev => ({ ...prev, [pageNum]: messages }));
-    });
-  }, [user, currentSessionId]);
-
+  // Removed DB effects for simplicity
+  // --- AUTOMATIC ANALYSIS TRIGGER (Sequential) ---
   useEffect(() => {
-    if (currentSessionId && dashboardActive) {
-      loadChatHistory(previewPage);
-    }
-  }, [currentSessionId, previewPage, dashboardActive, loadChatHistory]);
-
-  useEffect(() => {
-    if (!dashboardActive || !currentSessionId || !data || !user) return;
+    if (!dashboardActive || !data) return;
     let cancelled = false;
 
     const loadOrRun = async (pageNum: number) => {
       if (cancelled) return;
       if (llmMapRef.current[pageNum] || inFlightPages.current.has(pageNum)) return;
-
-      const pageRef = doc(db, "sessions", currentSessionId, "pages", pageNum.toString());
-      try {
-        const snap = await getDoc(pageRef);
-        if (cancelled) return;
-        if (snap.exists()) {
-          const d = snap.data();
-          setVlmMap(p => ({ ...p, [pageNum]: d.transcription }));
-          setLlmMap(p => ({ ...p, [pageNum]: d.synthesis }));
-          setFlashcardsByPage(p => ({ ...p, [pageNum]: d.flashcards || [] }));
-        } else {
-          await processPipeline(pageNum, data.filename);
-        }
-      } catch {
-        if (!cancelled) await processPipeline(pageNum, data.filename);
-      }
+      await processPipeline(pageNum, data.filename);
     };
 
     void (async () => {
       const end = Math.min(previewPage + 5, data.total_pages - 1);
-      const tasks: Promise<void>[] = [];
       for (let i = previewPage; i <= end; i++) {
-        tasks.push(loadOrRun(i));
+        if (cancelled) break;
+        await loadOrRun(i);
       }
-      await Promise.all(tasks);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [dashboardActive, currentSessionId, data, previewPage, user, processPipeline]);
-
-  useEffect(() => {
-    return onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      if (u) {
-        const q = query(collection(db, "sessions"), where("userId", "==", u.uid), orderBy("timestamp", "desc"));
-        onSnapshot(q, (snap) => setSessions(snap.docs.map(d => ({ id: d.id, ...d.data() } as SessionDoc))));
-        setAuthMode(null);
-      }
-    });
-  }, []);
+  }, [dashboardActive, data, previewPage, processPipeline]);
 
   const hasFiles = !!selectedPdf || selectedImages.length > 0;
 
   const handleStart = useCallback(async () => {
-    if (!user) { setAuthMode('signup'); return; }
     setLoading(true);
     setUploadPhase('Preparing the PDF…');
     setError(null);
@@ -263,40 +216,25 @@ const App: React.FC = () => {
     selectedImages.forEach(img => formData.append('files', img));
     try {
       const resp = await axios.post(`${API_BASE_URL}/upload`, formData, { timeout: 180_000 });
-      const sid = doc(collection(db, "sessions")).id;
-      setCurrentSessionId(sid);
       setData({ filename: resp.data.filename, total_pages: resp.data.total_pages });
       setDashboardActive(true);
       setSidebarOpen(false);
       setPreviewPage(0);
-      // Do not await — a slow/blocked Firestore would leave "Uploading…" forever
-      void setDoc(doc(db, "sessions", sid), {
-        filename: resp.data.filename,
-        total_pages: resp.data.total_pages,
-        userId: user.uid,
-        timestamp: serverTimestamp(),
-      }).catch((err) => {
-        console.error('Firestore session save failed', err);
-        setError('Notes are ready, but saving this chat to the cloud failed. Check Firebase rules and network.');
-      });
     } catch (e) {
       console.error(e);
-      const msg = axios.isAxiosError(e)
-        ? (e.code === 'ECONNABORTED' ? 'Upload timed out. Try a smaller file or check your connection.' : (e.response?.status ? `Upload failed (${e.response.status}).` : 'Upload failed. Is the backend running at http://localhost:8000 ?'))
-        : 'Upload failed. Is the backend running at http://localhost:8000 ?';
-      setError(msg);
+      setError('Upload failed. Is the backend running?');
     } finally {
       setUploadPhase(null);
       setLoading(false);
     }
-  }, [user, selectedPdf, selectedImages]);
+  }, [selectedPdf, selectedImages]);
 
   useEffect(() => {
     if (!hasFiles) stagedUploadKeyRef.current = null;
   }, [hasFiles]);
 
   useEffect(() => {
-    if (!hasFiles || !user || dashboardActive || loading) return;
+    if (!hasFiles || dashboardActive || loading) return;
     const key = [
       selectedPdf?.name ?? '',
       selectedPdf?.size ?? 0,
@@ -305,15 +243,12 @@ const App: React.FC = () => {
     if (stagedUploadKeyRef.current === key) return;
     stagedUploadKeyRef.current = key;
     void handleStart();
-  }, [hasFiles, user, dashboardActive, loading, selectedPdf, selectedImages, handleStart]);
+  }, [hasFiles, dashboardActive, loading, selectedPdf, selectedImages, handleStart]);
 
-  const hadFilesRef = useRef(false);
+  const hadFilesRef = useRef(false); // Keeps basic UI logic intact
   useEffect(() => {
-    if (hasFiles && !user && !hadFilesRef.current) {
-      setAuthMode('signup');
-    }
     hadFilesRef.current = hasFiles;
-  }, [hasFiles, user]);
+  }, [hasFiles]);
 
   const onMouseDown = (e: React.MouseEvent) => { if (zoom <= 1) return; setIsDragging(true); dragStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y }; };
   const onMouseMove = (e: React.MouseEvent) => { if (!isDragging) return; const limit = (zoom - 1) * 400; setPan({ x: Math.max(-limit, Math.min(limit, e.clientX - dragStart.current.x)), y: Math.max(-limit, Math.min(limit, e.clientY - dragStart.current.y)) }); };
@@ -326,13 +261,6 @@ const App: React.FC = () => {
       const r = await axios.post(`${API_BASE_URL}/chat`, { filename: data.filename, page_index: previewPage, context: vlmMap[previewPage], question: cp });
       const tutorMsg = { role: 'tutor' as const, content: r.data.answer };
       setChatHistory(prev => ({ ...prev, [previewPage]: [...(prev[previewPage] || []), tutorMsg] }));
-
-      if (currentSessionId) {
-        const userMsgRef = doc(collection(db, "sessions", currentSessionId, "pages", previewPage.toString(), "chats"));
-        await setDoc(userMsgRef, { role: 'user', content: q, timestamp: serverTimestamp() });
-        const tutorMsgRef = doc(collection(db, "sessions", currentSessionId, "pages", previewPage.toString(), "chats"));
-        await setDoc(tutorMsgRef, { role: 'tutor', content: r.data.answer, timestamp: serverTimestamp() });
-      }
     } finally { setIsAsking(false); }
   };
 
@@ -363,48 +291,17 @@ const App: React.FC = () => {
   return (
     <div className="flex h-screen w-full bg-[#0d0d0e] overflow-hidden font-sans selection:bg-cadmium/40 selection:text-white relative" onMouseUp={() => setIsDragging(false)}>
       <BackgroundElements />
-      <AnimatePresence>{authMode && <AuthPage initialMode={authMode} onClose={() => setAuthMode(null)} />}</AnimatePresence>
-
       <AnimatePresence>
         {selectionMenu && (
           <motion.button initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} style={{ left: selectionMenu.x, top: selectionMenu.y - 45 }} className="fixed z-[300] -translate-x-1/2 bg-white text-black px-4 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest shadow-2xl flex items-center gap-2" onClick={(e) => { e.stopPropagation(); setStagedReference(selectionMenu.text); setSelectionMenu(null); }}>Reference <Quote size={12} /></motion.button>
         )}
       </AnimatePresence>
 
-      <AnimatePresence mode="popLayout" initial={false}>
-        {sidebarOpen && (
-          <motion.aside initial={{ width: 0, opacity: 0 }} animate={{ width: 320, opacity: 1 }} transition={{ type: "spring", stiffness: 300, damping: 30 }} className="h-full bg-black/40 backdrop-blur-xl border-r border-zinc-900 flex flex-col p-8 z-50 shrink-0">
-            <div className="flex items-center justify-between mb-12"><span className="text-xl font-display font-medium text-white uppercase tracking-wider">Past Chats</span><button onClick={() => setSidebarOpen(false)} className="opacity-40 hover:opacity-100 p-2 text-white"><PanelLeftClose size={20} /></button></div>
-            <div className="flex-1 overflow-y-auto hide-scrollbar space-y-4 font-bold">
-              {sessions.map(s => (
-                <button key={s.id} onClick={() => { setCurrentSessionId(s.id); setData({ filename: s.filename, total_pages: (s as any).total_pages || 1 }); setDashboardActive(true); setSidebarOpen(false); setPreviewPage(0); }} className={`w-full text-left p-4 rounded-2xl transition-all ${currentSessionId === s.id ? 'bg-white/5 border border-white/10' : 'hover:bg-white/5'}`}>
-                  <p className="text-[10px] text-zinc-600 uppercase tracking-widest mb-1">{s.timestamp ? new Date(s.timestamp.toDate()).toLocaleDateString() : 'Recent'}</p>
-                  <p className="text-white text-sm truncate">{s.filename}</p>
-                </button>
-              ))}
-            </div>
-            <button className="text-[10px] uppercase font-bold text-cadmium border border-cadmium/20 px-6 py-4 rounded-xl hover:bg-white hover:text-black transition-all w-full mt-auto" onClick={resetSession}><Plus size={14} className="inline mr-2" /> New Chat</button>
-          </motion.aside>
-        )}
-      </AnimatePresence>
-
       <div className="flex-1 flex flex-col relative z-20 min-w-0 bg-[#0d0d0e]/60 backdrop-blur-[100px]">
         <header className="h-24 flex items-center justify-between px-10 absolute top-0 w-full z-40">
-          <div className="flex items-center gap-6">{!sidebarOpen && <button onClick={() => setSidebarOpen(true)} className="opacity-40 hover:opacity-100 text-white"><PanelLeft size={20} /></button>}</div>
-          <div className="text-6xl font-black text-white tracking-widest select-none" style={{ fontWeight: 100, transform: 'scaleY(1.8) translateX(48px)', letterSpacing: '0.3em' }}>TEWTR</div>
-          <div className="flex items-center gap-4">
-            {!user ? (
-              <div className="flex gap-4">
-                <button onClick={() => setAuthMode('login')} className="bg-white text-black px-8 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest">Login</button>
-                <button onClick={() => setAuthMode('signup')} className="border border-white/10 text-white px-8 py-2 rounded-full text-[10px] font-bold uppercase tracking-widest hover:bg-white/5">Sign Up</button>
-              </div>
-            ) : (
-              <div className="w-12 h-12 rounded-full border border-white/5 flex items-center justify-center text-[10px] font-bold text-white bg-zinc-900 group relative cursor-pointer overflow-hidden">
-                {user.photoURL ? <img src={user.photoURL} alt="p" className="w-full h-full object-cover shadow-2xl" /> : (user.displayName?.[0] || 'U').toUpperCase()}
-                <button onClick={() => signOut(auth)} className="absolute inset-0 bg-red-600 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"><LogOut size={16} /></button>
-              </div>
-            )}
-          </div>
+          <div className="flex items-center gap-6"></div>
+          <div className="text-6xl font-black text-white tracking-widest select-none" style={{ fontWeight: 100, transform: 'scaleY(1.8) translateX(36px)', letterSpacing: '0.3em' }}>TEWTR</div>
+          <div className="flex items-center gap-4"></div>
         </header>
 
         {!dashboardActive ? (

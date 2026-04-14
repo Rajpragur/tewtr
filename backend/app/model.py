@@ -1,5 +1,5 @@
 import os
-import requests
+import httpx
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 
@@ -12,6 +12,14 @@ CLARIFAI_DEEPSEEK_V3_2 = (
     "https://clarifai.com/deepseek-ai/deepseek-chat/models/deepseek-v3_2/versions/"
     "dcd4f2e00a864aca8c2b787a8a9d9b84"
 )
+
+CLARIFAI_GEMINI_FLASH = (
+    "https://clarifai.com/gcp/generate/models/gemini-3-flash-preview/versions/6c15e0a7d9f44380be327355c0e52476"
+)
+
+SAMBANOVA_VISION_MODEL = "Llama-3.2-11B-Vision-Instruct" 
+SAMBANOVA_LLM_MODEL = "gpt-oss-120b"
+# Note: Using SambaNova for both vision and pedagogy as requested.
 
 
 class VLMModel:
@@ -28,17 +36,21 @@ class VLMModel:
         if provider == "clarifai":
             self.api_key = os.getenv("CLARIFAI_API_KEY", "")
             self.base_url = "https://api.clarifai.com/v2/ext/openai/v1/chat/completions"
-            self.model_name = clarifai_model_id or CLARIFAI_GEMINI_FLASH_LITE
+            self.model_name = clarifai_model_id or CLARIFAI_GEMINI_FLASH
         elif provider == "baseten":
             self.api_key = os.getenv("NEMOTRON_API_KEY", "")
             self.base_url = "https://inference.baseten.co/v1/chat/completions"
             self.model_name = "nvidia/Nemotron-120B-A12B"
+        elif provider == "sambanova":
+            self.api_key = os.getenv("SAMBANOVA_API_KEY", "")
+            self.base_url = "https://api.sambanova.ai/v1/chat/completions"
+            self.model_name = clarifai_model_id or SAMBANOVA_VISION_MODEL
         else:
             raise Exception("Unknown provider")
 
-    def invoke(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def invoke(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Cross-provider HTTP invoke (OpenAI structure)
+        Cross-provider Async HTTP invoke (OpenAI structure)
         """
         try:
             if self.provider == "clarifai":
@@ -56,15 +68,16 @@ class VLMModel:
                     "max_tokens": 8192 if self._max_tokens is None else self._max_tokens,
                 }
             
-            response = requests.post(
-                url=self.base_url,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=120
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    url=self.base_url,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=120.0
+                )
             
             if response.status_code == 200:
                 return response.json()

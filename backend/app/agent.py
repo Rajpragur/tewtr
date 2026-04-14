@@ -1,6 +1,5 @@
 import os
 import json
-import asyncio
 from typing import List, Dict, Any
 from .model import VLMModel, CLARIFAI_DEEPSEEK_V3_2
 from .pdf_processor import PDFProcessor
@@ -9,8 +8,7 @@ class VLMAgent:
     def __init__(self):
         self.vlm = VLMModel(provider="clarifai")
         self.llm = VLMModel(
-            provider="clarifai",
-            clarifai_model_id=CLARIFAI_DEEPSEEK_V3_2,
+            provider="baseten",
             max_tokens=8192,
             temperature=0.35,
         )
@@ -46,7 +44,7 @@ class VLMAgent:
                 ]
             }
         ]
-        response = await asyncio.to_thread(self.vlm.invoke, messages)
+        response = await self.vlm.invoke(messages)
         return response['choices'][0]['message'].get('content', '')
 
     async def generate_tutor_json(self, transcription: str, previous_context: str = "") -> Dict[str, Any]:
@@ -208,7 +206,7 @@ class VLMAgent:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        response = await asyncio.to_thread(self.llm.invoke, messages)
+        response = await self.llm.invoke(messages)
         content = response['choices'][0]['message'].get('content', '')
         
         try:
@@ -247,7 +245,7 @@ class VLMAgent:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        response = await asyncio.to_thread(self.llm.invoke, messages)
+        response = await self.llm.invoke(messages)
         content = response["choices"][0]["message"].get("content", "")
         try:
             if "```json" in content:
@@ -281,5 +279,19 @@ class VLMAgent:
             "FINAL SYNTHESIS:"
         )
         messages = [{"role": "user", "content": prompt}]
-        response = await asyncio.to_thread(self.enquiry_llm.invoke, messages)
+        response = await self.enquiry_llm.invoke(messages)
         return response['choices'][0]['message'].get('content', '')
+
+    async def process_page(self, file_path: str, page_index: int, previous_context: str = "") -> Dict[str, Any]:
+        """ORCHESTRATOR: SambaNova Vision -> Nemotron Pedagogy Synthesis."""
+        # 1. Vision Stage (SambaNova)
+        transcription = await self.transcribe_page(file_path, page_index)
+        
+        # 2. Pedagogy Stage (Nemotron)
+        result = await self.generate_tutor_json(transcription, previous_context)
+        explanation = result.get("explanation", "")
+        
+        return {
+            "transcription": transcription,
+            "synthesis": explanation
+        }

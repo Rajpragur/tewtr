@@ -102,19 +102,22 @@ class ExplainRequest(BaseModel):
     transcription: str
     previous_context: str = ""
 
+@app.post("/process/{filename}")
+async def process_document_page(filename: str, page_index: int = 0, previous_context: str = ""):
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        agent = VLMAgent()
+        result = await agent.process_page(file_path, page_index, previous_context)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 class FlashcardsRequest(BaseModel):
     transcription: str
     explanation: str
-
-@app.post("/explain")
-async def explain_document(request: ExplainRequest):
-    try:
-        agent = VLMAgent()
-        result = await agent.generate_tutor_json(request.transcription, request.previous_context)
-        return {"result": result}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/flashcards")
 async def flashcards_only(request: FlashcardsRequest):
