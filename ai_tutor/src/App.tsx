@@ -128,7 +128,7 @@ const App: React.FC = () => {
       setLlmMap(p => ({ ...p, [pageNum]: syn }));
       if (currentSessionId) {
         const pageRef = doc(db, "sessions", currentSessionId, "pages", pageNum.toString());
-        await setDoc(pageRef, { transcription: tr, synthesis: syn, timestamp: serverTimestamp() }, { merge: true });
+        setDoc(pageRef, { transcription: tr, synthesis: syn, timestamp: serverTimestamp() }, { merge: true }).catch(console.error);
       }
 
       inFlightPages.current.delete(pageNum);
@@ -172,7 +172,7 @@ const App: React.FC = () => {
       setFlashcardsByPage(p => ({ ...p, [previewPage]: cards }));
       if (currentSessionId) {
         const pageRef = doc(db, "sessions", currentSessionId, "pages", previewPage.toString());
-        await setDoc(pageRef, { flashcards: cards, timestamp: serverTimestamp() }, { merge: true });
+        setDoc(pageRef, { flashcards: cards, timestamp: serverTimestamp() }, { merge: true }).catch(console.error);
       }
       setActiveCardIndex(0);
       setCardFlipped(false);
@@ -329,9 +329,9 @@ const App: React.FC = () => {
 
       if (currentSessionId) {
         const userMsgRef = doc(collection(db, "sessions", currentSessionId, "pages", previewPage.toString(), "chats"));
-        await setDoc(userMsgRef, { role: 'user', content: q, timestamp: serverTimestamp() });
+        setDoc(userMsgRef, { role: 'user', content: q, timestamp: serverTimestamp() }).catch(console.error);
         const tutorMsgRef = doc(collection(db, "sessions", currentSessionId, "pages", previewPage.toString(), "chats"));
-        await setDoc(tutorMsgRef, { role: 'tutor', content: r.data.answer, timestamp: serverTimestamp() });
+        setDoc(tutorMsgRef, { role: 'tutor', content: r.data.answer, timestamp: serverTimestamp() }).catch(console.error);
       }
     } finally { setIsAsking(false); }
   };

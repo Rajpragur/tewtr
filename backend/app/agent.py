@@ -10,12 +10,11 @@ class VLMAgent:
         self.vlm = VLMModel(provider="clarifai")
         self.llm = VLMModel(
             provider="clarifai",
-            clarifai_model_id=CLARIFAI_DEEPSEEK_V3_2,
             max_tokens=8192,
             temperature=0.35,
         )
         self.enquiry_llm = VLMModel(
-            provider="baseten",
+            provider="clarifai",
             max_tokens=4096,
             temperature=0.4,
         )
