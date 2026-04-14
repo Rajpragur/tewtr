@@ -36,7 +36,7 @@ class VLMModel:
         if provider == "clarifai":
             self.api_key = os.getenv("CLARIFAI_API_KEY", "")
             self.base_url = "https://api.clarifai.com/v2/ext/openai/v1/chat/completions"
-            self.model_name = clarifai_model_id or CLARIFAI_GEMINI_FLASH
+            self.model_name = clarifai_model_id or CLARIFAI_GEMINI_FLASH_LITE
         elif provider == "baseten":
             self.api_key = os.getenv("NEMOTRON_API_KEY", "")
             self.base_url = "https://inference.baseten.co/v1/chat/completions"

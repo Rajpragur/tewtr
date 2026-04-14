@@ -6,14 +6,16 @@ from .pdf_processor import PDFProcessor
 
 class VLMAgent:
     def __init__(self):
-        self.vlm = VLMModel(provider="clarifai")
+        self.vlm = VLMModel(provider="sambanova", clarifai_model_id="Llama-4-Maverick-17B-128E-Instruct")
         self.llm = VLMModel(
-            provider="baseten",
+            provider="sambanova",
+            clarifai_model_id="gpt-oss-120b",
             max_tokens=8192,
             temperature=0.35,
         )
         self.enquiry_llm = VLMModel(
-            provider="baseten",
+            provider="sambanova",
+            clarifai_model_id="gpt-oss-120b",
             max_tokens=4096,
             temperature=0.4,
         )
